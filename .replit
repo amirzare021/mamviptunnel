@@ -1,0 +1,39 @@
+modules = ["bash"]
+
+[nix]
+channel = "stable-24_05"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "ipv6-tunnel-service"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "IPv6Tunnel-Demo"
+
+[[workflows.workflow]]
+name = "ipv6-tunnel-service"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd ipv6tunnel && sudo bash install.sh"
+
+[[workflows.workflow]]
+name = "IPv6Tunnel-Demo"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd ipv6tunnel && chmod +x panel_replit.sh && ./panel_replit.sh"
+
+[deployment]
+run = ["sh", "-c", "cd ipv6tunnel && chmod +x panel.sh && ./panel.sh"]
