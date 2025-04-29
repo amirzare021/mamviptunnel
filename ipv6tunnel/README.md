@@ -1,58 +1,179 @@
 # IPv6 Tunneling Service
 
-A Linux-based IPv6 tunneling service that routes traffic from a source server through a destination server with terminal-based management.
+یک سرویس تونل IPv6 برای انتقال ترافیک IPv6 از یک سرور مبدا به یک سرور مقصد.
 
-## Overview
+## ویژگی‌ها
 
-This IPv6 tunneling solution allows you to route traffic from a source server (e.g., in a restricted location) through a destination server (e.g., in a location with unrestricted internet access). The traffic appears to originate from the destination server, effectively bypassing filtering or restrictions on the source server's network.
+- تونل‌سازی ترافیک IPv6 بین دو سرور
+- رمزنگاری SSL برای امنیت ارتباط
+- مدیریت پورت‌های استثناء برای ترافیک خارج از تونل
+- پنل مدیریت CLI برای کنترل آسان سرویس
+- نصب خودکار تمام وابستگی‌ها
+- سرویس systemd برای شروع خودکار
 
-## Features
+## پیش‌نیازها
 
-- IPv6 traffic routing through tunneling
-- Two server roles: source (client) and destination (server)
-- Terminal-based management interface
-- Configurable port exceptions (bypass specific ports from tunneling)
-- Support for WireGuard and SSH tunnel modes
-- Systemd service for automatic startup
-- SQLite database for configuration storage
-- Performance optimization settings
-- Secure encrypted connections
+- سیستم عامل لینوکس با کرنل نسخه 3.10 یا بالاتر
+- دسترسی به یک سرور مقصد با IPv6
+- دسترسی root برای نصب و پیکربندی
 
-## Requirements
+## نصب
 
-- Linux server with IPv6 connectivity
-- Root access on both servers
-- Required packages:
-  - ip / iproute2
-  - ip6tables
-  - sqlite3
-  - WireGuard (recommended) or SSH
-  - bash
+### روش 1: نصب اتوماتیک
 
-## Installation
+1. دانلود اسکریپت نصب:
+```bash
+wget https://github.com/yourusername/ipv6tunnel/archive/refs/heads/main.zip
+unzip main.zip
+cd ipv6tunnel-main
+```
 
-1. Clone this repository or copy the files to both the source and destination servers.
+2. اجرای اسکریپت نصب:
+```bash
+sudo bash setup.sh
+```
 
-2. Run the installation script on both servers:
+3. مراحل نصب را دنبال کنید و اطلاعات خواسته شده را وارد کنید.
 
-   ```bash
-   cd ipv6tunnel
-   sudo bash install.sh
-   ```
+### روش 2: کلون از گیت‌هاب
 
-3. Follow the interactive prompts in the installation script:
-   - Select the server role (source or destination)
-   - Configure tunnel mode (WireGuard or SSH)
-   - For WireGuard, exchange public keys between servers
-   - For SSH, transfer the public key to the destination server
+1. کلون مخزن:
+```bash
+git clone https://github.com/yourusername/ipv6tunnel.git
+cd ipv6tunnel
+```
 
-4. Once installation is complete, the tunnel service will be started automatically.
+2. اجرای اسکریپت نصب:
+```bash
+sudo bash setup.sh
+```
 
-## Usage
+## پیکربندی
 
-### Terminal Panel
+سرویس باید روی هر دو سرور (مبدا و مقصد) نصب شود:
 
-Access the terminal-based management panel:
+### سرور مقصد (Destination)
+
+این سرور ترافیک خروجی را دریافت و به اینترنت هدایت می‌کند.
+
+1. اسکریپت نصب را اجرا کنید و گزینه 2 (Destination Server) را انتخاب کنید.
+2. پورت استماع تونل را مشخص کنید (به طور پیش‌فرض 5000).
+3. مطمئن شوید که پورت در فایروال سرور باز است.
+
+### سرور مبدا (Source)
+
+این سرور ترافیک را از طریق تونل به سرور مقصد می‌فرستد.
+
+1. اسکریپت نصب را اجرا کنید و گزینه 1 (Source Server) را انتخاب کنید.
+2. آدرس IPv6 سرور مقصد را وارد کنید.
+3. پورت تونل سرور مقصد را وارد کنید.
+
+## استفاده
+
+### کنترل سرویس
+
+برای کنترل سرویس از دستورات زیر استفاده کنید:
+
+```bash
+# شروع سرویس
+sudo systemctl start ipv6tunnel
+
+# توقف سرویس
+sudo systemctl stop ipv6tunnel
+
+# راه‌اندازی مجدد سرویس
+sudo systemctl restart ipv6tunnel
+
+# بررسی وضعیت سرویس
+sudo systemctl status ipv6tunnel
+```
+
+### استفاده از پنل مدیریت
+
+برای مدیریت تونل از دستور زیر استفاده کنید:
 
 ```bash
 sudo ipv6tunnel
+```
+
+این دستور پنل مدیریت ترمینالی را باز می‌کند که امکانات زیر را در اختیار شما قرار می‌دهد:
+
+- شروع/توقف/راه‌اندازی مجدد تونل
+- مشاهده وضعیت اتصال
+- مدیریت پورت‌های استثناء
+- پیکربندی سرور از راه دور
+- تنظیمات بهینه‌سازی عملکرد
+
+### مدیریت پورت‌های استثناء
+
+برای اضافه کردن یک پورت به لیست استثناها (ترافیک این پورت از تونل عبور نمی‌کند):
+
+```bash
+sudo ipv6tunnel
+# گزینه 5: مدیریت پورت‌های استثناء را انتخاب کنید
+# گزینه 1: اضافه کردن پورت استثناء را انتخاب کنید
+# شماره پورت را وارد کنید
+```
+
+## عیب‌یابی
+
+### بررسی لاگ‌ها
+
+برای مشاهده لاگ‌های سرویس:
+
+```bash
+sudo journalctl -u ipv6tunnel.service
+# یا
+sudo cat /var/log/ipv6tunnel/ipv6tunnel.log
+```
+
+### مشکلات رایج
+
+1. **تونل شروع نمی‌شود**:
+   - بررسی کنید که IPv6 در هر دو سرور فعال باشد
+   - بررسی کنید که پورت در فایروال سرور مقصد باز باشد
+   - بررسی کنید که آدرس IPv6 سرور مقصد به درستی وارد شده باشد
+
+2. **ترافیک از تونل عبور نمی‌کند**:
+   - بررسی کنید که ip6tables در هر دو سرور به درستی پیکربندی شده باشد
+   - بررسی کنید که مسیریابی IPv6 به درستی تنظیم شده باشد
+
+3. **تونل پس از مدتی قطع می‌شود**:
+   - بررسی کنید که NAT Keepalive تنظیم شده باشد
+   - بررسی کنید که فایروال‌ها اتصالات غیرفعال را قطع نکنند
+
+## ساختار فایل‌ها
+
+```
+/etc/ipv6tunnel/           # دایرکتوری پیکربندی 
+  |- config.db             # پایگاه داده پیکربندی
+  |- tunnel.crt            # گواهی‌نامه SSL
+  |- tunnel.key            # کلید خصوصی SSL
+
+/opt/ipv6tunnel/           # دایرکتوری نصب
+  |- panel.sh              # اسکریپت پنل مدیریت
+  |- lib/                  # کتابخانه‌های اسکریپت
+    |- config.sh           # توابع پیکربندی
+    |- database.sh         # توابع پایگاه داده
+    |- network.sh          # توابع شبکه
+    |- security.sh         # توابع امنیتی
+    |- service.sh          # مدیریت سرویس
+    |- tunnel.sh           # مدیریت تونل
+    |- utils.sh            # توابع کمکی
+
+/var/log/ipv6tunnel/       # لاگ‌ها
+  |- ipv6tunnel.log        # فایل لاگ اصلی
+```
+
+## لایسنس
+
+این پروژه تحت لایسنس MIT منتشر شده است.
+
+## نویسندگان
+
+- نام شما - [ایمیل شما](mailto:your.email@example.com)
+
+## تشکر و قدردانی
+
+- این پروژه با استفاده از [socat](http://www.dest-unreach.org/socat/) برای تونل‌سازی رمزنگاری شده ایجاد شده است.
+- استفاده از ip6tables برای مدیریت ترافیک IPv6

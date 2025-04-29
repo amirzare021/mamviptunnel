@@ -101,6 +101,27 @@ configure_authorized_keys() {
     return 0
 }
 
+# Generate SSL certificates for encrypted tunnel
+generate_ssl_certificates() {
+    local cert_file="/etc/ipv6tunnel/tunnel.crt"
+    local key_file="/etc/ipv6tunnel/tunnel.key"
+    
+    # Create directory if it doesn't exist
+    mkdir -p "$(dirname "$cert_file")"
+    
+    # Generate self-signed certificate
+    echo "Generating SSL certificates for secure tunnel..."
+    openssl req -x509 -newkey rsa:4096 -keyout "$key_file" -out "$cert_file" -days 3650 -nodes -subj "/CN=ipv6tunnel" 2>/dev/null
+    
+    # Set proper permissions
+    chmod 600 "$key_file"
+    chmod 644 "$cert_file"
+    
+    echo "SSL certificates generated successfully."
+    echo "Certificate: $cert_file"
+    echo "Key: $key_file"
+}
+
 # Setup source server
 setup_source_server() {
     # Prompt for destination server
@@ -115,50 +136,16 @@ setup_source_server() {
     # Store in database
     db_set_remote_server "$remote_server"
     
-    # Prompt for tunnel mode
-    echo "Select tunnel mode:"
-    echo "1) WireGuard (recommended)"
-    echo "2) SSH"
-    read -p "Enter your choice [1-2]: " tunnel_mode_choice
+    # Set tunnel mode to ip6tables_socat
+    db_set_config "tunnel_mode" "ip6tables_socat"
     
-    case "$tunnel_mode_choice" in
-        1)
-            # WireGuard tunnel mode
-            db_set_config "tunnel_mode" "wireguard"
-            
-            # Generate WireGuard keys
-            generate_wireguard_keys
-            
-            # Prompt for remote public key
-            read -p "Enter the destination server's WireGuard public key: " remote_public_key
-            set_remote_wireguard_public_key "$remote_public_key"
-            ;;
-        2)
-            # SSH tunnel mode
-            db_set_config "tunnel_mode" "ssh"
-            
-            # Generate SSH key
-            generate_ssh_key "/root/.ssh/id_rsa"
-            
-            # Prompt for SSH username
-            read -p "Enter the username for SSH connection (default: root): " ssh_user
-            ssh_user=${ssh_user:-root}
-            db_set_config "ssh_user" "$ssh_user"
-            
-            # Prompt for SSH port
-            read -p "Enter the SSH port on destination server (default: 22): " ssh_port
-            ssh_port=${ssh_port:-22}
-            db_set_config "ssh_port" "$ssh_port"
-            
-            echo "Please add the displayed public key to the authorized_keys file on the destination server."
-            echo "Once completed, press Enter to continue..."
-            read dummy
-            ;;
-        *)
-            echo "Invalid choice. Using default (WireGuard)."
-            db_set_config "tunnel_mode" "wireguard"
-            ;;
-    esac
+    # Prompt for tunnel port
+    read -p "Enter the tunnel port on destination server (default: 5000): " tunnel_port
+    tunnel_port=${tunnel_port:-5000}
+    db_set_config "tunnel_port" "$tunnel_port"
+    
+    # Generate SSL certificates
+    generate_ssl_certificates
     
     # Enable IP forwarding
     enable_ipv6_forwarding
@@ -171,46 +158,19 @@ setup_source_server() {
 
 # Setup destination server
 setup_destination_server() {
-    # Prompt for tunnel mode
-    echo "Select tunnel mode:"
-    echo "1) WireGuard (recommended)"
-    echo "2) SSH"
-    read -p "Enter your choice [1-2]: " tunnel_mode_choice
+    # Set tunnel mode to ip6tables_socat
+    db_set_config "tunnel_mode" "ip6tables_socat"
     
-    case "$tunnel_mode_choice" in
-        1)
-            # WireGuard tunnel mode
-            db_set_config "tunnel_mode" "wireguard"
-            
-            # Generate WireGuard keys
-            generate_wireguard_keys
-            
-            # Prompt for remote public key
-            read -p "Enter the source server's WireGuard public key: " remote_public_key
-            set_remote_wireguard_public_key "$remote_public_key"
-            
-            # Setup NAT masquerading
-            setup_destination_nat
-            ;;
-        2)
-            # SSH tunnel mode
-            db_set_config "tunnel_mode" "ssh"
-            
-            # Prompt for public key
-            echo "Enter the public SSH key from the source server (paste below, then press Ctrl+D):"
-            public_key=$(cat)
-            
-            # Configure authorized keys
-            configure_authorized_keys "$public_key"
-            
-            # Setup NAT masquerading
-            setup_destination_nat
-            ;;
-        *)
-            echo "Invalid choice. Using default (WireGuard)."
-            db_set_config "tunnel_mode" "wireguard"
-            ;;
-    esac
+    # Prompt for tunnel port
+    read -p "Enter the tunnel port to listen on (default: 5000): " tunnel_port
+    tunnel_port=${tunnel_port:-5000}
+    db_set_config "tunnel_port" "$tunnel_port"
+    
+    # Generate SSL certificates
+    generate_ssl_certificates
+    
+    # Setup NAT masquerading
+    setup_destination_nat
     
     # Apply network performance optimizations
     optimize_network_performance
