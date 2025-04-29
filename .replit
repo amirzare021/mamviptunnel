@@ -13,19 +13,11 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "ipv6-tunnel-service"
+args = "IPv6Tunnel-Demo"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "IPv6Tunnel-Demo"
-
-[[workflows.workflow]]
-name = "ipv6-tunnel-service"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd ipv6tunnel && sudo bash install.sh"
+args = "ipv6-tunnel-service"
 
 [[workflows.workflow]]
 name = "IPv6Tunnel-Demo"
@@ -34,6 +26,14 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "cd ipv6tunnel && chmod +x panel_replit.sh && ./panel_replit.sh"
+
+[[workflows.workflow]]
+name = "ipv6-tunnel-service"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd ipv6tunnel && bash install_replit.sh"
 
 [deployment]
 run = ["sh", "-c", "cd ipv6tunnel && chmod +x panel.sh && ./panel.sh"]
