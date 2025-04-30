@@ -1,85 +1,107 @@
 #!/bin/bash
 
 # IPv6 Tunnel Installation Script
-# This script installs and configures the IPv6 tunneling service
-# on either the source or destination server.
+# این اسکریپت سرویس تونل IPv6 را نصب می‌کند
 
-# Source utility libraries
-BASE_DIR="$(dirname "$(readlink -f "$0")")"
-source "$BASE_DIR/lib/utils.sh"
-source "$BASE_DIR/lib/database.sh"
-source "$BASE_DIR/lib/network.sh"
-source "$BASE_DIR/lib/security.sh"
-source "$BASE_DIR/lib/tunnel.sh"
+# چک کردن دسترسی root
+if [ "$(id -u)" -ne 0 ]; then
+  echo "خطا: این اسکریپت باید با دسترسی root اجرا شود."
+  exit 1
+fi
 
-# Display header
-clear
-display_header "IPv6 Tunneling Service Installation"
-echo "This script will install and configure the IPv6 tunneling service."
-echo "You will need to run this script on both the source and destination servers."
+echo "====================================================="
+echo "            نصب سرویس تونل IPv6 با ip6tables         "
+echo "====================================================="
 echo ""
 
-# Check if running as root
-check_root
+# نصب پکیج‌های مورد نیاز
+echo "در حال نصب پکیج‌های مورد نیاز..."
+if command -v apt-get &>/dev/null; then
+  apt-get update
+  apt-get install -y iproute2 iptables sqlite3
+elif command -v yum &>/dev/null; then
+  yum install -y iproute iptables sqlite
+elif command -v dnf &>/dev/null; then
+  dnf install -y iproute iptables sqlite
+else
+  echo "پکیج منیجر شناسایی نشد. لطفاً پکیج‌های زیر را به صورت دستی نصب کنید:"
+  echo "- iproute2/iproute"
+  echo "- iptables"
+  echo "- sqlite3/sqlite"
+fi
 
-# Check system requirements
-check_requirements
+# ایجاد دایرکتوری‌های مورد نیاز
+mkdir -p /etc/ipv6tunnel
+mkdir -p /var/log/ipv6tunnel
 
-# Initialize database directory
-CONF_DIR="/etc/ipv6tunnel"
-mkdir -p "$CONF_DIR" 2>/dev/null
+# کپی کردن فایل‌ها
+echo "در حال نصب فایل‌ها..."
+cp ipv6tunnel.sh /usr/local/bin/ipv6tunnel
+cp ipv6tunnel.service /etc/systemd/system/
+chmod +x /usr/local/bin/ipv6tunnel
 
-# Create installation directory
-INSTALL_DIR="/opt/ipv6tunnel"
-mkdir -p "$INSTALL_DIR" 2>/dev/null
+# ایجاد دیتابیس
+echo "در حال ایجاد دیتابیس..."
+sqlite3 /etc/ipv6tunnel/config.db <<EOF
+CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 
-# Copy files to installation directory
-echo "Installing files..."
-cp -r "$BASE_DIR"/* "$INSTALL_DIR/"
-chmod +x "$INSTALL_DIR"/*.sh
-chmod +x "$INSTALL_DIR/lib"/*.sh
+CREATE TABLE IF NOT EXISTS excluded_ports (
+    port INTEGER PRIMARY KEY
+);
+EOF
 
-# Create symbolic links for panel
-ln -sf "$INSTALL_DIR/panel.sh" /usr/local/bin/ipv6tunnel
+# فعال کردن IPv6 اگر غیرفعال است
+if [ -f /proc/sys/net/ipv6/conf/all/disable_ipv6 ] && [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" == "1" ]; then
+  echo "IPv6 غیرفعال است. در حال فعال کردن..."
+  echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+  echo "net.ipv6.conf.all.disable_ipv6=0" > /etc/sysctl.d/99-ipv6.conf
+  sysctl -p /etc/sysctl.d/99-ipv6.conf
+fi
 
-# Prompt for installation type
+# پیکربندی سرویس
 echo ""
-echo "Please select the server type for installation:"
-echo "1) Source Server (Client) - Traffic originates here"
-echo "2) Destination Server (Server) - Traffic exits through this server"
-read -p "Enter your choice [1-2]: " server_type
+echo "لطفاً نوع سرور را انتخاب کنید:"
+echo "1) سرور مبدا (ترافیک از این سرور به سرور مقصد هدایت می‌شود)"
+echo "2) سرور مقصد (ترافیک از سرور مبدا به این سرور می‌آید)"
+read -p "گزینه را انتخاب کنید [1-2]: " server_type
 
-case "$server_type" in
-    1)
-        db_init "source"
-        setup_source_server
-        ;;
-    2)
-        db_init "destination"  
-        setup_destination_server
-        ;;
-    *)
-        echo "Invalid choice. Exiting."
-        exit 1
-        ;;
+case $server_type in
+  1)
+    # پیکربندی سرور مبدا
+    sqlite3 /etc/ipv6tunnel/config.db "INSERT OR REPLACE INTO config (key, value) VALUES ('server_type', 'source')"
+    
+    # دریافت آدرس IPv6 سرور مقصد
+    read -p "آدرس IPv6 سرور مقصد را وارد کنید: " destination_server
+    sqlite3 /etc/ipv6tunnel/config.db "INSERT OR REPLACE INTO config (key, value) VALUES ('destination_server', '$destination_server')"
+    
+    echo "سرور مبدا با موفقیت پیکربندی شد."
+    ;;
+    
+  2)
+    # پیکربندی سرور مقصد
+    sqlite3 /etc/ipv6tunnel/config.db "INSERT OR REPLACE INTO config (key, value) VALUES ('server_type', 'destination')"
+    echo "سرور مقصد با موفقیت پیکربندی شد."
+    ;;
+    
+  *)
+    echo "گزینه نامعتبر. خروج از برنامه."
+    exit 1
+    ;;
 esac
 
-# Install systemd service
-echo "Installing systemd service..."
-cp "$INSTALL_DIR/tunnel.service" /etc/systemd/system/
+# راه‌اندازی سرویس
+echo "در حال راه‌اندازی سرویس..."
 systemctl daemon-reload
-systemctl enable tunnel.service
-systemctl start tunnel.service
+systemctl enable ipv6tunnel.service
+systemctl start ipv6tunnel.service
 
-# Final steps
 echo ""
-echo "Installation complete!"
-echo "You can manage the tunnel using: ipv6tunnel"
-echo "Service can be controlled with: systemctl {start|stop|restart|status} tunnel"
+echo "نصب با موفقیت انجام شد!"
+echo "شما می‌توانید با دستور 'ipv6tunnel' سرویس را مدیریت کنید."
+echo "سرویس به طور خودکار در هنگام راه‌اندازی سیستم شروع می‌شود."
 echo ""
-
-if [ "$server_type" -eq 1 ]; then
-    echo "IMPORTANT: Make sure to also install this software on your destination server!"
-fi
 
 exit 0

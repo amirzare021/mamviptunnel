@@ -1,0 +1,2 @@
+server_type=none
+destination_server=

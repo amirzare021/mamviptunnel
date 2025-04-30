@@ -1,0 +1,13 @@
+[Unit]
+Description=IPv6 Tunneling Service with ip6tables
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ipv6tunnel start
+ExecStop=/usr/local/bin/ipv6tunnel stop
+RemainAfterExit=yes
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target
