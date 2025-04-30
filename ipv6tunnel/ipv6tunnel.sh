@@ -4,6 +4,10 @@
 # این اسکریپت ترافیک IPv6 را بین دو سرور تونل می‌کند
 # با استفاده از ip6tables و قوانین مسیریابی
 
+# تنظیم لوکال برای نمایش درست متن‌های فارسی
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+
 # تنظیم متغیرهای مسیر
 CONFIG_DIR="/etc/ipv6tunnel"
 CONFIG_FILE="$CONFIG_DIR/config.conf"
@@ -61,17 +65,33 @@ get_main_interface() {
   # تلاش برای پیدا کردن اینترفیس از طریق مسیر پیش‌فرض
   local interface=$(ip -6 route | grep default | awk '{print $5}' | head -n 1)
   
-  # اگر اینترفیس پیدا نشد، از طریق آدرس‌های IPv6 جستجو کن
+  # اگر اینترفیس پیدا نشد، سعی کن بر اساس اینترفیس با آدرس IPv6 پیدا کنی
   if [ -z "$interface" ]; then
-    interface=$(ip -6 addr | grep -v "host lo" | grep -oP '(?<=: )[^:]+' | head -n 1)
+    # تلاش برای پیدا کردن اینترفیس با آدرس IPv6
+    interface=$(ip -6 addr | grep inet6 | grep -v "::1" | awk '{print $NF}' | head -n 1)
   fi
   
-  # اگر هنوز اینترفیس پیدا نشد، خطا بده
+  # اگر هنوز اینترفیس پیدا نشد، تلاش کن اینترفیس اصلی را پیدا کنی
   if [ -z "$interface" ]; then
-    log "ERROR" "هیچ اینترفیس IPv6 پیدا نشد. لطفاً اتصال IPv6 را بررسی کنید."
-    return 1
+    # لیست همه اینترفیس‌های شبکه، به جز lo
+    interface=$(ip -br link show | grep -v "lo" | awk '{print $1}' | head -n 1)
   fi
   
+  # اگر هنوز اینترفیس پیدا نشد، از eth0 به عنوان پیش‌فرض استفاده کن
+  if [ -z "$interface" ]; then
+    if ip link show eth0 &>/dev/null; then
+      interface="eth0"
+    elif ip link show ens3 &>/dev/null; then
+      interface="ens3"
+    elif ip link show enp0s3 &>/dev/null; then
+      interface="enp0s3"
+    else
+      log "ERROR" "هیچ اینترفیس شبکه‌ای پیدا نشد. لطفاً اتصال شبکه را بررسی کنید."
+      return 1
+    fi
+  fi
+  
+  log "INFO" "اینترفیس شبکه '$interface' شناسایی شد"
   echo "$interface"
 }
 
