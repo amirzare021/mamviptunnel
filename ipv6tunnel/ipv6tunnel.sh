@@ -13,12 +13,18 @@ CONFIG_DIR="/etc/ipv6tunnel"
 CONFIG_FILE="$CONFIG_DIR/config.conf"
 EXCLUDED_PORTS_FILE="$CONFIG_DIR/excluded_ports.txt"
 
-# تابع ثبت پیام
+# تابع ثبت پیام - بدون تداخل با خروجی دستورات
 log() {
   local level="$1"
   local message="$2"
   local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-  echo "[$timestamp] [$level] $message"
+  
+  # فقط در حالت COMMAND_MODE=0 پیام‌ها را نمایش بده
+  # این متغیر را قبل از اجرای دستورات مهم تنظیم می‌کنیم
+  if [ "${COMMAND_MODE:-0}" -eq 0 ]; then
+    # نوشتن لاگ فقط به stderr
+    printf "[$timestamp] [$level] $message\n" >&2
+  fi
 }
 
 # بررسی اینکه آیا اسکریپت با دسترسی root اجرا شده است
@@ -236,16 +242,14 @@ remove_excluded_port() {
 setup_source_tunnel() {
   log "INFO" "راه‌اندازی تونل در سرور مبدا"
   
-  # ذخیره خروجی استاندارد و خطا
-  exec 3>&1
-  exec 4>&2
-  exec 2>/dev/null
+  # فعال کردن حالت اجرای دستورات - در این حالت لاگ‌ها نمایش داده نمی‌شوند
+  COMMAND_MODE=1
   
+  # دریافت آدرس سرور مقصد
   local destination_server=$(get_destination_server)
   
-  # بازگرداندن خروجی‌ها
-  exec 1>&3
-  exec 2>&4
+  # بازگشت به حالت عادی
+  COMMAND_MODE=0
   
   if [ -z "$destination_server" ]; then
     log "ERROR" "آدرس سرور مقصد تنظیم نشده است"
@@ -273,48 +277,32 @@ setup_source_tunnel() {
   ip6tables -t mangle -A PREROUTING -m mark --mark 1 -j ACCEPT
   ip6tables -t mangle -A PREROUTING -j MARK --set-mark 2
   
-  # تنظیم مسیریابی
-  # حذف قوانین قبلی اگر وجود دارند
-  ip -6 rule del fwmark 2 table 200 2>/dev/null || true
-  
-  # ایجاد جدول مسیریابی و قانون
-  ip -6 route flush table 200 2>/dev/null || true
-  
-  # دریافت اینترفیس اصلی (بدون پیام‌های لاگ که قطع می‌کنند)
-  exec 5>&1 # ذخیره stdout
-  exec 6>&2 # ذخیره stderr
-  exec 1>/dev/null # قطع stdout
-  exec 2>/dev/null # قطع stderr
-  
-  local interface=$(get_main_interface 2>/dev/null)
-  
-  # بازگرداندن stdout و stderr
-  exec 1>&5
-  exec 2>&6
+  # دریافت اینترفیس اصلی بدون نمایش لاگ‌ها
+  COMMAND_MODE=1
+  local interface=""
+  interface=$(get_main_interface 2>/dev/null || ip -br link show | grep -v lo | head -n1 | awk '{print $1}')
+  COMMAND_MODE=0
   
   if [ -z "$interface" ]; then
-    # تلاش برای تشخیص مستقیم
-    interface=$(ip -br link show | grep -v lo | head -n1 | awk '{print $1}')
-    if [ -z "$interface" ]; then
-      log "ERROR" "هیچ اینترفیس شبکه پیدا نشد"
-      return 1
-    fi
+    log "ERROR" "هیچ اینترفیس شبکه پیدا نشد"
+    return 1
   fi
   
-  # تنظیم مسیریابی
   log "INFO" "استفاده از اینترفیس $interface برای تونل"
   
-  # افزودن مسیر مستقیم به سرور مقصد در جدول اصلی اگر وجود ندارد
-  if ! ip -6 route show | grep -q "$destination_server"; then
-    ip -6 route add "$destination_server/128" dev "$interface" 2>/dev/null || true
+  # اجرای دستورات IP در یک اسکریپت جداگانه
+  # این روش از تداخل پیام‌های لاگ با دستورات IP جلوگیری می‌کند
+  SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+  if [ -x "$SCRIPT_DIR/setup_ip_cmds.sh" ]; then
+    "$SCRIPT_DIR/setup_ip_cmds.sh" "$interface" "$destination_server" "setup"
+    if [ $? -ne 0 ]; then
+      log "ERROR" "خطا در اجرای دستورات IP"
+      return 1
+    fi
+  else
+    log "ERROR" "اسکریپت setup_ip_cmds.sh یافت نشد یا قابل اجرا نیست"
+    return 1
   fi
-  
-  # تنظیم جدول مسیریابی اختصاصی با مسیر پیش‌فرض
-  ip -6 route add default dev "$interface" table 200 || true
-  ip -6 route add "$destination_server/128" dev "$interface" table 200 || true
-  
-  # افزودن قانون مسیریابی
-  ip -6 rule add fwmark 2 table 200 || true
   
   log "INFO" "مسیریابی از طریق اینترفیس $interface تنظیم شد"
   log "INFO" "تونل با موفقیت در سرور مبدا راه‌اندازی شد"
@@ -328,25 +316,15 @@ setup_destination_tunnel() {
   # فعال کردن IPv6 forwarding
   enable_ipv6_forwarding
   
-  # دریافت اینترفیس اصلی (بدون پیام‌های لاگ که قطع می‌کنند)
-  exec 5>&1 # ذخیره stdout
-  exec 6>&2 # ذخیره stderr
-  exec 1>/dev/null # قطع stdout
-  exec 2>/dev/null # قطع stderr
-  
-  local interface=$(get_main_interface 2>/dev/null)
-  
-  # بازگرداندن stdout و stderr
-  exec 1>&5
-  exec 2>&6
+  # دریافت اینترفیس اصلی بدون نمایش لاگ‌ها
+  COMMAND_MODE=1
+  local interface=""
+  interface=$(get_main_interface 2>/dev/null || ip -br link show | grep -v lo | head -n1 | awk '{print $1}')
+  COMMAND_MODE=0
   
   if [ -z "$interface" ]; then
-    # تلاش برای تشخیص مستقیم
-    interface=$(ip -br link show | grep -v lo | head -n1 | awk '{print $1}')
-    if [ -z "$interface" ]; then
-      log "ERROR" "هیچ اینترفیس شبکه پیدا نشد"
-      return 1
-    fi
+    log "ERROR" "هیچ اینترفیس شبکه پیدا نشد"
+    return 1
   fi
   
   log "INFO" "استفاده از اینترفیس $interface برای NAT"
@@ -456,18 +434,9 @@ show_status() {
   echo "نوع سرور: $server_type"
   
   # نمایش اطلاعات اینترفیس شبکه (با محدود کردن خروجی‌های لاگ)
-  # ذخیره stdout و stderr اصلی
-  exec 3>&1
-  exec 4>&2
-  
-  # هدایت خروجی لاگ به /dev/null
-  exec 2>/dev/null
-  
-  local interface=$(get_main_interface 2>/dev/null)
-  
-  # بازگرداندن stdout و stderr
-  exec 1>&3
-  exec 2>&4
+  COMMAND_MODE=1 # غیرفعال کردن لاگ‌ها
+  local interface=$(get_main_interface 2>/dev/null || ip -br link show | grep -v lo | head -n1 | awk '{print $1}')
+  COMMAND_MODE=0 # فعال کردن مجدد لاگ‌ها
   
   if [ -n "$interface" ]; then
     echo "اینترفیس شبکه: $interface (فعال)"
