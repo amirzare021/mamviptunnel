@@ -103,22 +103,42 @@ start_service() {
   
   if [ "$server_type" == "source" ]; then
     local destination_server=$(get_destination_server)
-    log "INFO" "راه‌اندازی تونل از این سرور به سرور مقصد $destination_server (شبیه‌سازی شده)"
-    log "INFO" "تنظیم قوانین ip6tables برای مسیریابی ترافیک (شبیه‌سازی شده)"
+    log "INFO" "راه‌اندازی تونل در سرور مبدا به مقصد $destination_server (شبیه‌سازی شده)"
     
     # لیست پورت‌های استثناء
     local excluded_ports=$(get_excluded_ports)
     if [ -n "$excluded_ports" ]; then
-      log "INFO" "پورت‌های استثناء: $excluded_ports (شبیه‌سازی شده)"
+      log "INFO" "اعمال قوانین برای پورت‌های استثناء: $excluded_ports (شبیه‌سازی شده)"
+      for port in $(echo "$excluded_ports" | tr ',' ' '); do
+        log "INFO" "قوانین برای استثناء کردن پورت $port اعمال شد (شبیه‌سازی شده)"
+      done
+    else
+      log "INFO" "هیچ پورت استثنایی تعریف نشده است"
     fi
+    
+    # شبیه‌سازی راه‌اندازی تونل
+    log "INFO" "تنظیم قوانین مسیریابی و ip6tables برای مسیریابی ترافیک (شبیه‌سازی شده)"
+    log "INFO" "مسیریابی از طریق اینترفیس eth0 تنظیم شد (شبیه‌سازی شده)"
+    
   else
-    log "INFO" "راه‌اندازی NAT برای سرور مقصد (شبیه‌سازی شده)"
+    log "INFO" "راه‌اندازی تونل در سرور مقصد (شبیه‌سازی شده)"
+    log "INFO" "فعال‌سازی IPv6 forwarding (شبیه‌سازی شده)"
+    
+    # شبیه‌سازی راه‌اندازی NAT
+    log "INFO" "تنظیم NAT برای مسیریابی ترافیک از طریق اینترفیس eth0 (شبیه‌سازی شده)"
     
     # لیست پورت‌های استثناء
     local excluded_ports=$(get_excluded_ports)
     if [ -n "$excluded_ports" ]; then
-      log "INFO" "پورت‌های استثناء: $excluded_ports (شبیه‌سازی شده)"
+      log "INFO" "اعمال قوانین برای پورت‌های استثناء: $excluded_ports (شبیه‌سازی شده)"
+      for port in $(echo "$excluded_ports" | tr ',' ' '); do
+        log "INFO" "قوانین برای استثناء کردن پورت $port اعمال شد (شبیه‌سازی شده)"
+      done
+    else
+      log "INFO" "هیچ پورت استثنایی تعریف نشده است"
     fi
+    
+    log "INFO" "مسیریابی از طریق اینترفیس eth0 تنظیم شد (شبیه‌سازی شده)"
   fi
   
   log "INFO" "سرویس تونل IPv6 با موفقیت شروع شد (شبیه‌سازی شده)"
@@ -166,15 +186,56 @@ show_status() {
   
   if [ "$server_type" == "source" ]; then
     echo "آدرس سرور مقصد: $destination_server"
-    echo "وضعیت تونل: شبیه‌سازی شده"
+    
+    # شبیه‌سازی بررسی وضعیت
+    if [ -f "./data/service_started" ]; then
+      echo "وضعیت تونل: فعال (شبیه‌سازی شده)"
+    else
+      echo "وضعیت تونل: غیرفعال (شبیه‌سازی شده)"
+      echo "  - توجه: در محیط واقعی، دلیل دقیق غیرفعال بودن نمایش داده می‌شود"
+    fi
   else
-    echo "وضعیت NAT: شبیه‌سازی شده"
+    # شبیه‌سازی بررسی وضعیت NAT
+    if [ -f "./data/service_started" ]; then
+      echo "وضعیت تونل: فعال (شبیه‌سازی شده)"
+    else
+      echo "وضعیت تونل: غیرفعال (شبیه‌سازی شده)"
+    fi
   fi
   
   echo ""
   echo "پورت‌های استثناء: ${excluded_ports:-'هیچ'}"
   echo ""
   
+  # نمایش اطلاعات مسیریابی
+  if [ "$server_type" == "source" ]; then
+    echo "جدول مسیریابی (شبیه‌سازی شده):"
+    if [ -f "./data/service_started" ]; then
+      echo "default via $destination_server dev eth0 table 200"
+      echo "$destination_server/128 dev eth0 table 200"
+    else
+      echo "هیچ مسیری در جدول 200 تعریف نشده است"
+    fi
+    
+    echo ""
+    echo "قوانین مسیریابی (شبیه‌سازی شده):"
+    if [ -f "./data/service_started" ]; then
+      echo "32765:  from all fwmark 0x2 lookup 200"
+    else
+      echo "هیچ قانون مسیریابی تعریف نشده است"
+    fi
+  else
+    echo "قوانین NAT (شبیه‌سازی شده):"
+    if [ -f "./data/service_started" ]; then
+      echo "Chain POSTROUTING (policy ACCEPT 0 packets, 0 bytes)"
+      echo "    pkts      bytes target     prot opt in     out     source        destination"
+      echo "       0        0 MASQUERADE  all  eth0   ::/0            ::/0"
+    else
+      echo "هیچ قانونی در جدول NAT تعریف نشده است"
+    fi
+  fi
+  
+  echo ""
   echo "تذکر: این یک شبیه‌سازی است و در محیط واقعی، اطلاعات دقیق‌تری"
   echo "از وضعیت تونل و قوانین ip6tables نمایش داده می‌شود."
   echo ""

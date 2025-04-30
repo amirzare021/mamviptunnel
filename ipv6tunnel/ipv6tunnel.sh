@@ -192,8 +192,32 @@ setup_source_tunnel() {
   
   # ایجاد جدول مسیریابی و قانون
   ip -6 route flush table 200 2>/dev/null || true
-  ip -6 route add default via "$destination_server" table 200
+  
+  # بجای استفاده از 'via'، فقط از 'default dev ...' استفاده می‌کنیم تا مسیریابی از طریق اینترفیس انجام شود
+  # آدرس سرور مقصد را در مسیریابی ذخیره می‌کنیم، اما از آن مستقیماً استفاده نمی‌کنیم
+  
+  # دریافت اینترفیس اصلی
+  local interface=$(ip -6 route | grep default | awk '{print $5}' | head -n 1)
+  if [ -z "$interface" ]; then
+    log "ERROR" "اینترفیس IPv6 پیش‌فرض پیدا نشد"
+    interface=$(ip -6 addr | grep -v "host lo" | grep -oP '(?<=: )[^:]+' | head -n 1)
+    if [ -z "$interface" ]; then
+      log "ERROR" "هیچ اینترفیس IPv6 پیدا نشد. لطفاً اتصال IPv6 را بررسی کنید."
+      return 1
+    fi
+    log "INFO" "استفاده از اینترفیس $interface به عنوان اینترفیس پیش‌فرض"
+  fi
+  
+  # تلاش برای مسیریابی از طریق اینترفیس پیش‌فرض
+  ip -6 route add default dev "$interface" table 200
+  
+  # اضافه کردن مسیر مستقیم به سرور مقصد، برای اطمینان از ارتباط
+  ip -6 route add "$destination_server/128" dev "$interface" table 200 2>/dev/null || true
+  
+  # افزودن قانون مسیریابی
   ip -6 rule add fwmark 2 table 200
+  
+  log "INFO" "مسیریابی از طریق اینترفیس $interface تنظیم شد"
   
   log "INFO" "تونل با موفقیت در سرور مبدا راه‌اندازی شد"
   return 0
@@ -210,18 +234,33 @@ setup_destination_tunnel() {
   local interface=$(ip -6 route | grep default | awk '{print $5}' | head -n 1)
   
   if [ -z "$interface" ]; then
-    log "ERROR" "اینترفیس IPv6 پیدا نشد"
-    return 1
+    log "ERROR" "اینترفیس IPv6 پیش‌فرض پیدا نشد"
+    interface=$(ip -6 addr | grep -v "host lo" | grep -oP '(?<=: )[^:]+' | head -n 1)
+    if [ -z "$interface" ]; then
+      log "ERROR" "هیچ اینترفیس IPv6 پیدا نشد. لطفاً اتصال IPv6 را بررسی کنید."
+      return 1
+    fi
+    log "INFO" "استفاده از اینترفیس $interface به عنوان اینترفیس پیش‌فرض"
   fi
   
-  # تنظیم NAT برای مسیریابی ترافیک
+  # پاک کردن قوانین قبلی NAT
   ip6tables -t nat -F
+  
+  # تنظیم NAT برای مسیریابی ترافیک
   ip6tables -t nat -A POSTROUTING -o "$interface" -j MASQUERADE
   
   # اعمال قوانین پورت‌های استثناء
   apply_all_port_exceptions
   
+  # اطمینان از اجازه forwarding در کرنل
+  echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
+  
+  # اطمینان از پذیرش بسته‌های forwarded
+  ip6tables -P FORWARD ACCEPT
+  
   log "INFO" "تونل با موفقیت در سرور مقصد راه‌اندازی شد"
+  log "INFO" "مسیریابی از طریق اینترفیس $interface تنظیم شد"
+  
   return 0
 }
 
@@ -311,12 +350,26 @@ show_status() {
   if [ "$server_type" = "source" ]; then
     echo "آدرس سرور مقصد: $destination_server"
     
-    # بررسی اینکه آیا قوانین مسیریابی فعال هستند
+    # بررسی اینکه آیا قوانین مسیریابی و ip6tables فعال هستند
     local routing_rules=$(ip -6 rule show | grep "from all fwmark 2 lookup 200" | wc -l)
-    if [ "$routing_rules" -gt 0 ]; then
+    local mangle_rules=$(ip6tables -t mangle -L | grep "MARK set 0x2" | wc -l)
+    local routes=$(ip -6 route show table 200 | grep -c "default")
+    
+    if [ "$routing_rules" -gt 0 ] && [ "$mangle_rules" -gt 0 ] && [ "$routes" -gt 0 ]; then
       echo "وضعیت تونل: فعال"
     else
       echo "وضعیت تونل: غیرفعال"
+      
+      # نمایش وضعیت دقیق‌تر برای عیب‌یابی
+      if [ "$routing_rules" -eq 0 ]; then
+        echo "  - قوانین مسیریابی تنظیم نشده‌اند"
+      fi
+      if [ "$mangle_rules" -eq 0 ]; then
+        echo "  - قوانین ip6tables (mangle) تنظیم نشده‌اند"
+      fi
+      if [ "$routes" -eq 0 ]; then
+        echo "  - مسیر پیش‌فرض در جدول مسیریابی 200 وجود ندارد"
+      fi
     fi
   else
     # بررسی اینکه آیا قوانین NAT فعال هستند
