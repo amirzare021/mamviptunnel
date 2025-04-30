@@ -62,37 +62,62 @@ enable_ipv6_forwarding() {
 
 # پیدا کردن اینترفیس شبکه اصلی
 get_main_interface() {
-  # تلاش برای پیدا کردن اینترفیس از طریق مسیر پیش‌فرض
-  local interface=$(ip -6 route | grep default | awk '{print $5}' | head -n 1)
+  # لیست همه اینترفیس‌های فعال (به جز loopback) را دریافت کن
+  local interfaces=""
   
-  # اگر اینترفیس پیدا نشد، سعی کن بر اساس اینترفیس با آدرس IPv6 پیدا کنی
-  if [ -z "$interface" ]; then
-    # تلاش برای پیدا کردن اینترفیس با آدرس IPv6
-    interface=$(ip -6 addr | grep inet6 | grep -v "::1" | awk '{print $NF}' | head -n 1)
+  # روش 1: استفاده از ip -br link برای یافتن اینترفیس‌های فعال
+  interfaces=$(ip -br link show up | grep -v "lo" | awk '{print $1}')
+  
+  if [ -z "$interfaces" ]; then
+    log "ERROR" "هیچ اینترفیس فعالی پیدا نشد."
+    return 1
   fi
   
-  # اگر هنوز اینترفیس پیدا نشد، تلاش کن اینترفیس اصلی را پیدا کنی
-  if [ -z "$interface" ]; then
-    # لیست همه اینترفیس‌های شبکه، به جز lo
-    interface=$(ip -br link show | grep -v "lo" | awk '{print $1}' | head -n 1)
-  fi
+  # انتخاب اینترفیس مناسب
+  local selected_interface=""
   
-  # اگر هنوز اینترفیس پیدا نشد، از eth0 به عنوان پیش‌فرض استفاده کن
-  if [ -z "$interface" ]; then
+  # ابتدا بررسی کن که آیا اینترفیس‌ها واقعاً وجود دارند و قابل استفاده هستند
+  for iface in $interfaces; do
+    if ip link show "$iface" &>/dev/null; then
+      # اینترفیس وجود دارد، حالا بررسی کن که آیا IPv6 روی آن فعال است
+      if ip -6 addr show dev "$iface" 2>/dev/null | grep -q "inet6"; then
+        # اینترفیس با IPv6 پیدا شد
+        selected_interface="$iface"
+        log "INFO" "اینترفیس '$iface' با پشتیبانی IPv6 یافت شد"
+        break
+      elif [ -z "$selected_interface" ]; then
+        # اگر هنوز اینترفیسی انتخاب نشده، این را به عنوان فالبک نگه دار
+        selected_interface="$iface"
+      fi
+    fi
+  done
+  
+  # اگر هیچ اینترفیسی با IPv6 پیدا نشد، از اولین اینترفیس موجود استفاده کن
+  if [ -z "$selected_interface" ]; then
+    # بررسی کن نام‌های رایج اینترفیس
     if ip link show eth0 &>/dev/null; then
-      interface="eth0"
+      selected_interface="eth0"
     elif ip link show ens3 &>/dev/null; then
-      interface="ens3"
+      selected_interface="ens3"
     elif ip link show enp0s3 &>/dev/null; then
-      interface="enp0s3"
+      selected_interface="enp0s3"
+    elif ip link show eno1 &>/dev/null; then
+      selected_interface="eno1"
     else
-      log "ERROR" "هیچ اینترفیس شبکه‌ای پیدا نشد. لطفاً اتصال شبکه را بررسی کنید."
+      # اگر هیچ‌کدام از نام‌های رایج نبود، خطا بده
+      log "ERROR" "هیچ اینترفیس شبکه مناسبی پیدا نشد."
       return 1
     fi
   fi
   
-  log "INFO" "اینترفیس شبکه '$interface' شناسایی شد"
-  echo "$interface"
+  # اطمینان از اینکه اینترفیس واقعاً وجود دارد
+  if ! ip link show "$selected_interface" &>/dev/null; then
+    log "ERROR" "اینترفیس انتخاب شده '$selected_interface' وجود ندارد یا قابل دسترسی نیست."
+    return 1
+  fi
+  
+  log "INFO" "اینترفیس شبکه '$selected_interface' برای تونل انتخاب شد"
+  echo "$selected_interface"
 }
 
 # اعمال قانون استثناء برای یک پورت مشخص
@@ -388,13 +413,27 @@ show_status() {
   echo ""
   echo "نوع سرور: $server_type"
   
+  # نمایش اطلاعات اینترفیس شبکه
+  local interface=$(get_main_interface 2>/dev/null)
+  if [ -n "$interface" ]; then
+    echo "اینترفیس شبکه: $interface (فعال)"
+    
+    # نمایش آدرس‌های IPv6 اینترفیس
+    echo "آدرس‌های IPv6 اینترفیس:"
+    ip -6 addr show dev "$interface" | grep "inet6" | awk '{print "  - " $2}' || echo "  - آدرس IPv6 پیدا نشد"
+  else
+    echo "اینترفیس شبکه: نامشخص (مشکل در شناسایی اینترفیس)"
+  fi
+  
+  echo ""
+  
   if [ "$server_type" = "source" ]; then
     echo "آدرس سرور مقصد: $destination_server"
     
     # بررسی اینکه آیا قوانین مسیریابی و ip6tables فعال هستند
     local routing_rules=$(ip -6 rule show | grep "from all fwmark 2 lookup 200" | wc -l)
-    local mangle_rules=$(ip6tables -t mangle -L | grep "MARK set 0x2" | wc -l)
-    local routes=$(ip -6 route show table 200 | grep -c "default")
+    local mangle_rules=$(ip6tables -t mangle -L 2>/dev/null | grep -c "MARK set 0x2" || echo 0)
+    local routes=$(ip -6 route show table 200 2>/dev/null | grep -c "default" || echo 0)
     
     if [ "$routing_rules" -gt 0 ] && [ "$mangle_rules" -gt 0 ] && [ "$routes" -gt 0 ]; then
       echo "وضعیت تونل: فعال"

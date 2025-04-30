@@ -2,6 +2,7 @@ modules = ["bash"]
 
 [nix]
 channel = "stable-24_05"
+packages = ["zip"]
 
 [workflows]
 
