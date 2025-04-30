@@ -1,171 +1,193 @@
 #!/bin/bash
 
-# IPv6 Tunnel Management Script
-# این اسکریپت برای مدیریت تونل IPv6 با استفاده از ip6tables است
+# سرویس تونل IPv6 با استفاده از ip6tables
+# این اسکریپت ترافیک IPv6 را بین دو سرور تونل می‌کند
+# با استفاده از ip6tables و قوانین مسیریابی
 
-# چک کردن دسترسی root
-if [ "$(id -u)" -ne 0 ]; then
-  echo "خطا: این اسکریپت باید با دسترسی root اجرا شود."
-  exit 1
-fi
+# تنظیم متغیرهای مسیر
+CONFIG_DIR="/etc/ipv6tunnel"
+CONFIG_FILE="$CONFIG_DIR/config.conf"
+EXCLUDED_PORTS_FILE="$CONFIG_DIR/excluded_ports.txt"
 
-# مسیر دیتابیس
-CONFIG_DB="/etc/ipv6tunnel/config.db"
-LOG_FILE="/var/log/ipv6tunnel/ipv6tunnel.log"
-
-# تابع ثبت لاگ
+# تابع ثبت پیام
 log() {
   local level="$1"
   local message="$2"
   local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-  echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
-  echo "[$level] $message"
+  echo "[$timestamp] [$level] $message"
 }
 
-# چک کردن وجود دیتابیس
-if [ ! -f "$CONFIG_DB" ]; then
-  log "ERROR" "دیتابیس پیکربندی یافت نشد. لطفاً اول اسکریپت نصب را اجرا کنید."
+# بررسی اینکه آیا اسکریپت با دسترسی root اجرا شده است
+if [ "$(id -u)" != "0" ]; then
+   log "ERROR" "این اسکریپت باید با دسترسی root اجرا شود."
+   exit 1
+fi
+
+# بررسی وجود فایل پیکربندی
+if [ ! -f "$CONFIG_FILE" ]; then
+  log "ERROR" "فایل پیکربندی یافت نشد. لطفاً ابتدا اسکریپت نصب را اجرا کنید."
   exit 1
 fi
 
-# دریافت نوع سرور (مبدا یا مقصد)
+# دریافت نوع سرور از فایل پیکربندی
 get_server_type() {
-  sqlite3 "$CONFIG_DB" "SELECT value FROM config WHERE key='server_type'" 2>/dev/null || echo ""
+  grep "server_type" "$CONFIG_FILE" | cut -d '=' -f 2
 }
 
-# دریافت آدرس سرور مقصد
+# دریافت آدرس سرور مقصد از فایل پیکربندی
 get_destination_server() {
-  sqlite3 "$CONFIG_DB" "SELECT value FROM config WHERE key='destination_server'" 2>/dev/null || echo ""
+  grep "destination_server" "$CONFIG_FILE" | cut -d '=' -f 2
 }
 
 # دریافت لیست پورت‌های استثناء
 get_excluded_ports() {
-  sqlite3 "$CONFIG_DB" "SELECT port FROM excluded_ports ORDER BY port ASC" 2>/dev/null | tr '\n' ',' | sed 's/,$//'
-}
-
-# اضافه کردن پورت به لیست استثناء
-add_excluded_port() {
-  local port="$1"
-  if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-    log "ERROR" "شماره پورت نامعتبر: $port"
-    return 1
-  fi
-  
-  sqlite3 "$CONFIG_DB" "INSERT OR IGNORE INTO excluded_ports (port) VALUES ($port)" 2>/dev/null
-  if [ $? -eq 0 ]; then
-    log "INFO" "پورت $port به لیست استثناء اضافه شد"
-    # اعمال قوانین برای پورت جدید
-    apply_port_exception "$port"
-    return 0
+  if [ -f "$EXCLUDED_PORTS_FILE" ]; then
+    cat "$EXCLUDED_PORTS_FILE" | tr '\n' ',' | sed 's/,$//'
   else
-    log "ERROR" "خطا در اضافه کردن پورت $port به دیتابیس"
-    return 1
+    echo ""
   fi
 }
 
-# حذف پورت از لیست استثناء
-remove_excluded_port() {
-  local port="$1"
-  if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-    log "ERROR" "شماره پورت نامعتبر: $port"
-    return 1
-  fi
-  
-  # چک کردن اینکه آیا پورت در لیست وجود دارد
-  local exists=$(sqlite3 "$CONFIG_DB" "SELECT COUNT(*) FROM excluded_ports WHERE port=$port" 2>/dev/null)
-  if [ "$exists" -eq 0 ]; then
-    log "ERROR" "پورت $port در لیست استثناء وجود ندارد"
-    return 1
-  fi
-  
-  sqlite3 "$CONFIG_DB" "DELETE FROM excluded_ports WHERE port=$port" 2>/dev/null
-  if [ $? -eq 0 ]; then
-    log "INFO" "پورت $port از لیست استثناء حذف شد"
-    # حذف قوانین برای پورت
-    remove_port_exception "$port"
-    return 0
-  else
-    log "ERROR" "خطا در حذف پورت $port از دیتابیس"
-    return 1
+# فعال کردن IPv6 forwarding
+enable_ipv6_forwarding() {
+  if [ "$(cat /proc/sys/net/ipv6/conf/all/forwarding)" != "1" ]; then
+    log "INFO" "فعال کردن IPv6 forwarding..."
+    echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
   fi
 }
 
-# اعمال قوانین برای پورت استثناء
+# پیدا کردن اینترفیس شبکه اصلی
+get_main_interface() {
+  # تلاش برای پیدا کردن اینترفیس از طریق مسیر پیش‌فرض
+  local interface=$(ip -6 route | grep default | awk '{print $5}' | head -n 1)
+  
+  # اگر اینترفیس پیدا نشد، از طریق آدرس‌های IPv6 جستجو کن
+  if [ -z "$interface" ]; then
+    interface=$(ip -6 addr | grep -v "host lo" | grep -oP '(?<=: )[^:]+' | head -n 1)
+  fi
+  
+  # اگر هنوز اینترفیس پیدا نشد، خطا بده
+  if [ -z "$interface" ]; then
+    log "ERROR" "هیچ اینترفیس IPv6 پیدا نشد. لطفاً اتصال IPv6 را بررسی کنید."
+    return 1
+  fi
+  
+  echo "$interface"
+}
+
+# اعمال قانون استثناء برای یک پورت مشخص
 apply_port_exception() {
   local port="$1"
   local server_type=$(get_server_type)
   
   if [ "$server_type" = "source" ]; then
-    # برای سرور مبدا، ترافیک پورت را از تونل خارج کن
-    ip6tables -t mangle -C PREROUTING -p tcp --dport "$port" -j MARK --set-mark 1 2>/dev/null || 
-    ip6tables -t mangle -A PREROUTING -p tcp --dport "$port" -j MARK --set-mark 1
+    # پاک کردن قوانین قبلی برای این پورت
+    ip6tables -t mangle -D PREROUTING -p tcp --dport "$port" -j MARK --set-mark 1 2>/dev/null || true
+    ip6tables -t mangle -D PREROUTING -p udp --dport "$port" -j MARK --set-mark 1 2>/dev/null || true
     
-    ip6tables -t mangle -C PREROUTING -p udp --dport "$port" -j MARK --set-mark 1 2>/dev/null || 
+    # اضافه کردن قوانین جدید
+    ip6tables -t mangle -A PREROUTING -p tcp --dport "$port" -j MARK --set-mark 1
     ip6tables -t mangle -A PREROUTING -p udp --dport "$port" -j MARK --set-mark 1
     
     log "INFO" "قوانین برای استثناء کردن پورت $port اعمال شد"
   else
-    # برای سرور مقصد، ترافیک پورت را از masquerade استثناء کن
-    local interface=$(ip -6 route | grep default | awk '{print $5}' | head -n 1)
+    # پاک کردن قوانین قبلی برای این پورت
+    ip6tables -t nat -D PREROUTING -p tcp --dport "$port" -j RETURN 2>/dev/null || true
+    ip6tables -t nat -D PREROUTING -p udp --dport "$port" -j RETURN 2>/dev/null || true
     
-    ip6tables -t nat -C POSTROUTING -o "$interface" -p tcp --dport "$port" -j RETURN 2>/dev/null || 
-    ip6tables -t nat -A POSTROUTING -o "$interface" -p tcp --dport "$port" -j RETURN
+    # اضافه کردن قوانین جدید
+    ip6tables -t nat -A PREROUTING -p tcp --dport "$port" -j RETURN
+    ip6tables -t nat -A PREROUTING -p udp --dport "$port" -j RETURN
     
-    ip6tables -t nat -C POSTROUTING -o "$interface" -p udp --dport "$port" -j RETURN 2>/dev/null || 
-    ip6tables -t nat -A POSTROUTING -o "$interface" -p udp --dport "$port" -j RETURN
-    
-    log "INFO" "قوانین برای استثناء کردن پورت $port در NAT اعمال شد"
+    log "INFO" "قوانین برای استثناء کردن پورت $port اعمال شد"
   fi
-}
-
-# حذف قوانین برای پورت استثناء
-remove_port_exception() {
-  local port="$1"
-  local server_type=$(get_server_type)
   
-  if [ "$server_type" = "source" ]; then
-    # برای سرور مبدا، قوانین استثناء را حذف کن
-    ip6tables -t mangle -D PREROUTING -p tcp --dport "$port" -j MARK --set-mark 1 2>/dev/null
-    ip6tables -t mangle -D PREROUTING -p udp --dport "$port" -j MARK --set-mark 1 2>/dev/null
-    
-    log "INFO" "قوانین استثناء برای پورت $port حذف شد"
-  else
-    # برای سرور مقصد، قوانین استثناء را حذف کن
-    local interface=$(ip -6 route | grep default | awk '{print $5}' | head -n 1)
-    
-    ip6tables -t nat -D POSTROUTING -o "$interface" -p tcp --dport "$port" -j RETURN 2>/dev/null
-    ip6tables -t nat -D POSTROUTING -o "$interface" -p udp --dport "$port" -j RETURN 2>/dev/null
-    
-    log "INFO" "قوانین NAT استثناء برای پورت $port حذف شد"
-  fi
+  return 0
 }
 
-# اعمال همه قوانین پورت‌های استثناء
+# اعمال تمام قوانین استثناء بر اساس فایل پورت‌ها
 apply_all_port_exceptions() {
-  local ports=$(get_excluded_ports)
+  if [ -f "$EXCLUDED_PORTS_FILE" ]; then
+    local ports=$(cat "$EXCLUDED_PORTS_FILE")
+    local excluded_ports=$(get_excluded_ports)
+    
+    if [ -n "$excluded_ports" ]; then
+      log "INFO" "اعمال قوانین برای پورت‌های استثناء: $excluded_ports"
+      
+      for port in $ports; do
+        apply_port_exception "$port"
+      done
+    fi
+  fi
   
-  if [ -z "$ports" ]; then
-    log "INFO" "هیچ پورت استثنایی تعریف نشده است"
+  return 0
+}
+
+# اضافه کردن پورت به لیست استثناء
+add_excluded_port() {
+  local port="$1"
+  
+  # بررسی معتبر بودن پورت
+  if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    log "ERROR" "شماره پورت نامعتبر: $port"
+    return 1
+  fi
+  
+  # بررسی اینکه آیا پورت از قبل وجود دارد
+  if [ -f "$EXCLUDED_PORTS_FILE" ] && grep -q "^$port$" "$EXCLUDED_PORTS_FILE"; then
+    log "INFO" "پورت $port قبلاً در لیست استثناء وجود دارد"
     return 0
   fi
   
-  log "INFO" "اعمال قوانین برای پورت‌های استثناء: $ports"
-  IFS=',' read -ra PORT_ARRAY <<< "$ports"
-  for port in "${PORT_ARRAY[@]}"; do
-    apply_port_exception "$port"
-  done
+  # اضافه کردن پورت
+  echo "$port" >> "$EXCLUDED_PORTS_FILE"
+  log "INFO" "پورت $port به لیست استثناء اضافه شد"
+  
+  # اعمال قانون
+  apply_port_exception "$port"
+  
+  return 0
 }
 
-# راه‌اندازی IPv6 forwarding
-enable_ipv6_forwarding() {
-  log "INFO" "فعال کردن IPv6 forwarding"
-  sysctl -w net.ipv6.conf.all.forwarding=1 > /dev/null
-  echo "net.ipv6.conf.all.forwarding=1" > /etc/sysctl.d/30-ipv6-forwarding.conf
-  sysctl -p /etc/sysctl.d/30-ipv6-forwarding.conf > /dev/null
+# حذف پورت از لیست استثناء
+remove_excluded_port() {
+  local port="$1"
+  local server_type=$(get_server_type)
+  
+  # بررسی معتبر بودن پورت
+  if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    log "ERROR" "شماره پورت نامعتبر: $port"
+    return 1
+  fi
+  
+  # بررسی اینکه آیا پورت وجود دارد
+  if [ ! -f "$EXCLUDED_PORTS_FILE" ] || ! grep -q "^$port$" "$EXCLUDED_PORTS_FILE"; then
+    log "ERROR" "پورت $port در لیست استثناء وجود ندارد"
+    return 1
+  fi
+  
+  # حذف پورت از فایل
+  sed -i "/^$port$/d" "$EXCLUDED_PORTS_FILE" 2>/dev/null || 
+  (grep -v "^$port$" "$EXCLUDED_PORTS_FILE" > "$EXCLUDED_PORTS_FILE.tmp" && mv "$EXCLUDED_PORTS_FILE.tmp" "$EXCLUDED_PORTS_FILE")
+  
+  # حذف قوانین مربوط به پورت
+  if [ "$server_type" = "source" ]; then
+    ip6tables -t mangle -D PREROUTING -p tcp --dport "$port" -j MARK --set-mark 1 2>/dev/null || true
+    ip6tables -t mangle -D PREROUTING -p udp --dport "$port" -j MARK --set-mark 1 2>/dev/null || true
+  else
+    ip6tables -t nat -D PREROUTING -p tcp --dport "$port" -j RETURN 2>/dev/null || true
+    ip6tables -t nat -D PREROUTING -p udp --dport "$port" -j RETURN 2>/dev/null || true
+  fi
+  
+  log "INFO" "پورت $port از لیست استثناء حذف شد"
+  
+  return 0
 }
 
 # راه‌اندازی تونل در سرور مبدا
 setup_source_tunnel() {
+  log "INFO" "راه‌اندازی تونل در سرور مبدا"
+  
   local destination_server=$(get_destination_server)
   
   if [ -z "$destination_server" ]; then
@@ -175,14 +197,22 @@ setup_source_tunnel() {
   
   log "INFO" "راه‌اندازی تونل در سرور مبدا به مقصد $destination_server"
   
-  # برای اطمینان از پاک بودن قوانین قبلی
+  # فعال کردن IPv6 forwarding
+  enable_ipv6_forwarding
+  
+  # پاک کردن قوانین قبلی
   ip6tables -t mangle -F
   
-  # مارک کردن ترافیک برای هدایت از طریق تونل به جز پورت‌های استثناء
-  # ابتدا قوانین پورت‌های استثناء را اعمال کن (مارک 1)
-  apply_all_port_exceptions
+  # اعمال قوانین برای پورت‌های استثناء
+  local excluded_ports=$(get_excluded_ports)
+  if [ -n "$excluded_ports" ]; then
+    log "INFO" "اعمال قوانین برای پورت‌های استثناء: $excluded_ports"
+    apply_all_port_exceptions
+  else
+    log "INFO" "هیچ پورت استثنایی تعریف نشده است"
+  fi
   
-  # بقیه ترافیک را با مارک 2 علامت‌گذاری کن
+  # ترافیک استثناء با مارک 1 علامت‌گذاری شده‌اند، اکنون بقیه ترافیک را با 2 علامت‌گذاری می‌کنیم
   ip6tables -t mangle -A PREROUTING -m mark --mark 1 -j ACCEPT
   ip6tables -t mangle -A PREROUTING -j MARK --set-mark 2
   
@@ -193,32 +223,28 @@ setup_source_tunnel() {
   # ایجاد جدول مسیریابی و قانون
   ip -6 route flush table 200 2>/dev/null || true
   
-  # بجای استفاده از 'via'، فقط از 'default dev ...' استفاده می‌کنیم تا مسیریابی از طریق اینترفیس انجام شود
-  # آدرس سرور مقصد را در مسیریابی ذخیره می‌کنیم، اما از آن مستقیماً استفاده نمی‌کنیم
-  
   # دریافت اینترفیس اصلی
-  local interface=$(ip -6 route | grep default | awk '{print $5}' | head -n 1)
+  local interface=$(get_main_interface)
   if [ -z "$interface" ]; then
-    log "ERROR" "اینترفیس IPv6 پیش‌فرض پیدا نشد"
-    interface=$(ip -6 addr | grep -v "host lo" | grep -oP '(?<=: )[^:]+' | head -n 1)
-    if [ -z "$interface" ]; then
-      log "ERROR" "هیچ اینترفیس IPv6 پیدا نشد. لطفاً اتصال IPv6 را بررسی کنید."
-      return 1
-    fi
-    log "INFO" "استفاده از اینترفیس $interface به عنوان اینترفیس پیش‌فرض"
+    return 1
   fi
   
-  # تلاش برای مسیریابی از طریق اینترفیس پیش‌فرض
-  ip -6 route add default dev "$interface" table 200
+  # تنظیم مسیریابی
+  log "INFO" "استفاده از اینترفیس $interface برای تونل"
   
-  # اضافه کردن مسیر مستقیم به سرور مقصد، برای اطمینان از ارتباط
-  ip -6 route add "$destination_server/128" dev "$interface" table 200 2>/dev/null || true
+  # افزودن مسیر مستقیم به سرور مقصد در جدول اصلی اگر وجود ندارد
+  if ! ip -6 route show | grep -q "$destination_server"; then
+    ip -6 route add "$destination_server/128" dev "$interface" 2>/dev/null || true
+  fi
+  
+  # تنظیم جدول مسیریابی اختصاصی
+  ip -6 route add default dev "$interface" table 200
+  ip -6 route add "$destination_server/128" dev "$interface" table 200
   
   # افزودن قانون مسیریابی
   ip -6 rule add fwmark 2 table 200
   
   log "INFO" "مسیریابی از طریق اینترفیس $interface تنظیم شد"
-  
   log "INFO" "تونل با موفقیت در سرور مبدا راه‌اندازی شد"
   return 0
 }
@@ -231,20 +257,18 @@ setup_destination_tunnel() {
   enable_ipv6_forwarding
   
   # دریافت اینترفیس اصلی
-  local interface=$(ip -6 route | grep default | awk '{print $5}' | head -n 1)
-  
+  local interface=$(get_main_interface)
   if [ -z "$interface" ]; then
-    log "ERROR" "اینترفیس IPv6 پیش‌فرض پیدا نشد"
-    interface=$(ip -6 addr | grep -v "host lo" | grep -oP '(?<=: )[^:]+' | head -n 1)
-    if [ -z "$interface" ]; then
-      log "ERROR" "هیچ اینترفیس IPv6 پیدا نشد. لطفاً اتصال IPv6 را بررسی کنید."
-      return 1
-    fi
-    log "INFO" "استفاده از اینترفیس $interface به عنوان اینترفیس پیش‌فرض"
+    return 1
   fi
+  
+  log "INFO" "استفاده از اینترفیس $interface برای NAT"
   
   # پاک کردن قوانین قبلی NAT
   ip6tables -t nat -F
+  
+  # اطمینان از پذیرش ترافیک forwarded
+  ip6tables -P FORWARD ACCEPT
   
   # تنظیم NAT برای مسیریابی ترافیک
   ip6tables -t nat -A POSTROUTING -o "$interface" -j MASQUERADE
@@ -255,11 +279,8 @@ setup_destination_tunnel() {
   # اطمینان از اجازه forwarding در کرنل
   echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
   
-  # اطمینان از پذیرش بسته‌های forwarded
-  ip6tables -P FORWARD ACCEPT
-  
-  log "INFO" "تونل با موفقیت در سرور مقصد راه‌اندازی شد"
   log "INFO" "مسیریابی از طریق اینترفیس $interface تنظیم شد"
+  log "INFO" "تونل با موفقیت در سرور مقصد راه‌اندازی شد"
   
   return 0
 }
@@ -371,13 +392,32 @@ show_status() {
         echo "  - مسیر پیش‌فرض در جدول مسیریابی 200 وجود ندارد"
       fi
     fi
+    
+    # بررسی قابلیت دسترسی به سرور مقصد
+    ping6 -c 1 -W 3 "$destination_server" > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+      echo "دسترسی به سرور مقصد: موفق"
+    else
+      echo "دسترسی به سرور مقصد: ناموفق"
+      echo "  - لطفاً اتصال شبکه و آدرس سرور مقصد را بررسی کنید"
+    fi
   else
     # بررسی اینکه آیا قوانین NAT فعال هستند
     local nat_rules=$(ip6tables -t nat -L | grep MASQUERADE | wc -l)
-    if [ "$nat_rules" -gt 0 ]; then
+    local forwarding=$(cat /proc/sys/net/ipv6/conf/all/forwarding)
+    
+    if [ "$nat_rules" -gt 0 ] && [ "$forwarding" -eq 1 ]; then
       echo "وضعیت تونل: فعال"
     else
       echo "وضعیت تونل: غیرفعال"
+      
+      # نمایش وضعیت دقیق‌تر برای عیب‌یابی
+      if [ "$nat_rules" -eq 0 ]; then
+        echo "  - قوانین NAT تنظیم نشده‌اند"
+      fi
+      if [ "$forwarding" -ne 1 ]; then
+        echo "  - IPv6 forwarding فعال نیست"
+      fi
     fi
   fi
   
