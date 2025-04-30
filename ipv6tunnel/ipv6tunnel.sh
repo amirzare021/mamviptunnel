@@ -62,13 +62,29 @@ enable_ipv6_forwarding() {
 
 # پیدا کردن اینترفیس شبکه اصلی
 get_main_interface() {
+  # تغییر استاندارد خروجی لاگ به stderr
+  exec 3>&2 # ذخیره stderr اصلی
+  exec 2>/dev/null # جلوگیری از نمایش خروجی خطاها
+  
   # لیست همه اینترفیس‌های فعال (به جز loopback) را دریافت کن
   local interfaces=""
   
   # روش 1: استفاده از ip -br link برای یافتن اینترفیس‌های فعال
-  interfaces=$(ip -br link show up | grep -v "lo" | awk '{print $1}')
+  interfaces=$(ip -br link show up 2>/dev/null | grep -v "lo" | awk '{print $1}')
+  
+  # اگر این روش کار نکرد، استفاده از روش جایگزین
+  if [ -z "$interfaces" ]; then
+    interfaces=$(ip link show 2>/dev/null | grep -v "lo:" | grep "state UP" | cut -d: -f2 | tr -d ' ')
+  fi
+  
+  # اگر هنوز هیچ اینترفیسی پیدا نشد، بررسی همه اینترفیس‌ها (حتی اگر UP نباشند)
+  if [ -z "$interfaces" ]; then
+    interfaces=$(ip link show 2>/dev/null | grep -v "lo:" | cut -d: -f2 | tr -d ' ')
+  fi
   
   if [ -z "$interfaces" ]; then
+    # بازگرداندن stderr اصلی
+    exec 2>&3
     log "ERROR" "هیچ اینترفیس فعالی پیدا نشد."
     return 1
   fi
@@ -76,41 +92,28 @@ get_main_interface() {
   # انتخاب اینترفیس مناسب
   local selected_interface=""
   
-  # ابتدا بررسی کن که آیا اینترفیس‌ها واقعاً وجود دارند و قابل استفاده هستند
-  for iface in $interfaces; do
-    if ip link show "$iface" &>/dev/null; then
-      # اینترفیس وجود دارد، حالا بررسی کن که آیا IPv6 روی آن فعال است
-      if ip -6 addr show dev "$iface" 2>/dev/null | grep -q "inet6"; then
-        # اینترفیس با IPv6 پیدا شد
-        selected_interface="$iface"
-        log "INFO" "اینترفیس '$iface' با پشتیبانی IPv6 یافت شد"
-        break
-      elif [ -z "$selected_interface" ]; then
-        # اگر هنوز اینترفیسی انتخاب نشده، این را به عنوان فالبک نگه دار
-        selected_interface="$iface"
-      fi
+  # نام‌های اینترفیس رایج را بررسی کن (به ترتیب اولویت)
+  for iface_name in ens160 ens3 eth0 enp0s3 eno1; do
+    if echo "$interfaces" | grep -q "$iface_name"; then
+      selected_interface="$iface_name"
+      break
     fi
   done
   
-  # اگر هیچ اینترفیسی با IPv6 پیدا نشد، از اولین اینترفیس موجود استفاده کن
+  # اگر هیچ اینترفیس ترجیحی پیدا نشد، اولین اینترفیس را انتخاب کن
   if [ -z "$selected_interface" ]; then
-    # بررسی کن نام‌های رایج اینترفیس
-    if ip link show eth0 &>/dev/null; then
-      selected_interface="eth0"
-    elif ip link show ens3 &>/dev/null; then
-      selected_interface="ens3"
-    elif ip link show enp0s3 &>/dev/null; then
-      selected_interface="enp0s3"
-    elif ip link show eno1 &>/dev/null; then
-      selected_interface="eno1"
-    else
-      # اگر هیچ‌کدام از نام‌های رایج نبود، خطا بده
-      log "ERROR" "هیچ اینترفیس شبکه مناسبی پیدا نشد."
-      return 1
-    fi
+    selected_interface=$(echo "$interfaces" | head -n1)
   fi
   
-  # اطمینان از اینکه اینترفیس واقعاً وجود دارد
+  # بازگرداندن stderr اصلی
+  exec 2>&3
+  
+  if [ -z "$selected_interface" ]; then
+    log "ERROR" "هیچ اینترفیس شبکه مناسبی پیدا نشد."
+    return 1
+  fi
+  
+  # بررسی نهایی اینترفیس انتخاب شده
   if ! ip link show "$selected_interface" &>/dev/null; then
     log "ERROR" "اینترفیس انتخاب شده '$selected_interface' وجود ندارد یا قابل دسترسی نیست."
     return 1
@@ -233,7 +236,16 @@ remove_excluded_port() {
 setup_source_tunnel() {
   log "INFO" "راه‌اندازی تونل در سرور مبدا"
   
+  # ذخیره خروجی استاندارد و خطا
+  exec 3>&1
+  exec 4>&2
+  exec 2>/dev/null
+  
   local destination_server=$(get_destination_server)
+  
+  # بازگرداندن خروجی‌ها
+  exec 1>&3
+  exec 2>&4
   
   if [ -z "$destination_server" ]; then
     log "ERROR" "آدرس سرور مقصد تنظیم نشده است"
@@ -268,10 +280,25 @@ setup_source_tunnel() {
   # ایجاد جدول مسیریابی و قانون
   ip -6 route flush table 200 2>/dev/null || true
   
-  # دریافت اینترفیس اصلی
-  local interface=$(get_main_interface)
+  # دریافت اینترفیس اصلی (بدون پیام‌های لاگ که قطع می‌کنند)
+  exec 5>&1 # ذخیره stdout
+  exec 6>&2 # ذخیره stderr
+  exec 1>/dev/null # قطع stdout
+  exec 2>/dev/null # قطع stderr
+  
+  local interface=$(get_main_interface 2>/dev/null)
+  
+  # بازگرداندن stdout و stderr
+  exec 1>&5
+  exec 2>&6
+  
   if [ -z "$interface" ]; then
-    return 1
+    # تلاش برای تشخیص مستقیم
+    interface=$(ip -br link show | grep -v lo | head -n1 | awk '{print $1}')
+    if [ -z "$interface" ]; then
+      log "ERROR" "هیچ اینترفیس شبکه پیدا نشد"
+      return 1
+    fi
   fi
   
   # تنظیم مسیریابی
@@ -282,12 +309,12 @@ setup_source_tunnel() {
     ip -6 route add "$destination_server/128" dev "$interface" 2>/dev/null || true
   fi
   
-  # تنظیم جدول مسیریابی اختصاصی
-  ip -6 route add default dev "$interface" table 200
-  ip -6 route add "$destination_server/128" dev "$interface" table 200
+  # تنظیم جدول مسیریابی اختصاصی با مسیر پیش‌فرض
+  ip -6 route add default dev "$interface" table 200 || true
+  ip -6 route add "$destination_server/128" dev "$interface" table 200 || true
   
   # افزودن قانون مسیریابی
-  ip -6 rule add fwmark 2 table 200
+  ip -6 rule add fwmark 2 table 200 || true
   
   log "INFO" "مسیریابی از طریق اینترفیس $interface تنظیم شد"
   log "INFO" "تونل با موفقیت در سرور مبدا راه‌اندازی شد"
@@ -301,10 +328,25 @@ setup_destination_tunnel() {
   # فعال کردن IPv6 forwarding
   enable_ipv6_forwarding
   
-  # دریافت اینترفیس اصلی
-  local interface=$(get_main_interface)
+  # دریافت اینترفیس اصلی (بدون پیام‌های لاگ که قطع می‌کنند)
+  exec 5>&1 # ذخیره stdout
+  exec 6>&2 # ذخیره stderr
+  exec 1>/dev/null # قطع stdout
+  exec 2>/dev/null # قطع stderr
+  
+  local interface=$(get_main_interface 2>/dev/null)
+  
+  # بازگرداندن stdout و stderr
+  exec 1>&5
+  exec 2>&6
+  
   if [ -z "$interface" ]; then
-    return 1
+    # تلاش برای تشخیص مستقیم
+    interface=$(ip -br link show | grep -v lo | head -n1 | awk '{print $1}')
+    if [ -z "$interface" ]; then
+      log "ERROR" "هیچ اینترفیس شبکه پیدا نشد"
+      return 1
+    fi
   fi
   
   log "INFO" "استفاده از اینترفیس $interface برای NAT"
@@ -413,16 +455,32 @@ show_status() {
   echo ""
   echo "نوع سرور: $server_type"
   
-  # نمایش اطلاعات اینترفیس شبکه
+  # نمایش اطلاعات اینترفیس شبکه (با محدود کردن خروجی‌های لاگ)
+  # ذخیره stdout و stderr اصلی
+  exec 3>&1
+  exec 4>&2
+  
+  # هدایت خروجی لاگ به /dev/null
+  exec 2>/dev/null
+  
   local interface=$(get_main_interface 2>/dev/null)
+  
+  # بازگرداندن stdout و stderr
+  exec 1>&3
+  exec 2>&4
+  
   if [ -n "$interface" ]; then
     echo "اینترفیس شبکه: $interface (فعال)"
     
-    # نمایش آدرس‌های IPv6 اینترفیس
+    # نمایش آدرس‌های IPv6 اینترفیس با مسیر دقیق
     echo "آدرس‌های IPv6 اینترفیس:"
-    ip -6 addr show dev "$interface" | grep "inet6" | awk '{print "  - " $2}' || echo "  - آدرس IPv6 پیدا نشد"
+    ip -6 addr show dev "$interface" 2>/dev/null | grep "inet6" | awk '{print "  - " $2}' || echo "  - آدرس IPv6 پیدا نشد"
   else
     echo "اینترفیس شبکه: نامشخص (مشکل در شناسایی اینترفیس)"
+    
+    # نمایش همه اینترفیس‌های موجود برای کمک به عیب‌یابی
+    echo "اینترفیس‌های موجود:"
+    ip -br link show 2>/dev/null | grep -v "lo" || echo "  - هیچ اینترفیسی پیدا نشد"
   fi
   
   echo ""
