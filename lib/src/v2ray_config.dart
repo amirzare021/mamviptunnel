@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:core';
 
 /// Class to handle V2Ray configuration generation from VLESS URLs
 class V2RayConfig {
@@ -9,7 +10,8 @@ class V2RayConfig {
   /// Create a V2Ray configuration from a VLESS URL
   factory V2RayConfig.fromVlessUrl(String vlessLink) {
     if (!vlessLink.startsWith('vless://')) {
-      throw FormatException('Invalid VLESS URL format. URL must start with "vless://"');
+      throw FormatException(
+          'Invalid VLESS URL format. URL must start with "vless://"');
     }
 
     final uri = Uri.parse(vlessLink);
@@ -19,9 +21,9 @@ class V2RayConfig {
     if (uri.host.isEmpty) {
       throw FormatException('Invalid VLESS URL: missing host');
     }
-
     if (uri.userInfo.isEmpty) {
-      throw FormatException('Invalid VLESS URL: missing user ID (UUID)');
+      throw FormatException(
+          'Invalid VLESS URL: missing user ID (UUID)');
     }
 
     // Set default port if not specified
@@ -33,9 +35,7 @@ class V2RayConfig {
         "port": 10808,
         "listen": "127.0.0.1",
         "protocol": "socks",
-        "settings": {
-          "udp": true
-        }
+        "settings": {"udp": true}
       }
     ];
 
@@ -73,6 +73,7 @@ class V2RayConfig {
       }
     ];
 
+    // Basic routing: private IPs → direct
     final routing = {
       "domainStrategy": "IPIfNonMatch",
       "rules": [
@@ -94,16 +95,17 @@ class V2RayConfig {
   }
 
   /// Build stream settings based on connection parameters
-  static Map<String, dynamic> _buildStreamSettings(Uri uri, Map<String, String> params) {
+  static Map<String, dynamic> _buildStreamSettings(
+      Uri uri, Map<String, String> params) {
     final network = params['type'] ?? 'tcp';
     final security = params['security'] ?? 'tls';
-    
+
     final streamSettings = {
       "network": network,
       "security": security,
     };
 
-    // Add TLS settings if security is tls or xtls
+    // Add TLS settings if needed
     if (security == 'tls' || security == 'xtls') {
       streamSettings["tlsSettings"] = {
         "serverName": params['sni'] ?? uri.host,
@@ -111,7 +113,7 @@ class V2RayConfig {
       };
     }
 
-    // Add network specific settings
+    // Add network-specific settings
     switch (network) {
       case 'ws':
         streamSettings["wsSettings"] = {
@@ -163,12 +165,8 @@ class V2RayConfig {
   }
 
   /// Convert the configuration to a JSON-serializable map
-  Map<String, dynamic> toJson() {
-    return _config;
-  }
+  Map<String, dynamic> toJson() => _config;
 
   @override
-  String toString() {
-    return jsonEncode(_config);
-  }
+  String toString() => jsonEncode(_config);
 }
